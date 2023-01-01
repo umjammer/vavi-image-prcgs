@@ -31,6 +31,7 @@ import vavi.util.Debug;
  * @version 0.00 2022-12-28 nsano initial version <br>
  */
 class PrcgsHeader {
+
     /** 0-4 */
     byte[] signature = new byte[5];
     /** at where: 5-20 */
@@ -56,18 +57,18 @@ class PrcgsHeader {
     /** 66-126 */
     byte[] comment = new byte[61];
 
-    /** */
+    /** for compressed image */
     public static final int COMPRESSED = 0x10;
 
-    /** */
+    /** is compressed or not */
     boolean isCompressed() {
         return isCompressed != 0;
     }
 
-    /** */
+    /** for color image */
     public static final int COLOR = 0;
 
-    /** */
+    /** is monotone image or not */
     boolean isMono() {
         return isMono != 0;
     }
@@ -89,60 +90,54 @@ class PrcgsHeader {
                 '}';
     }
 
-    /** */
+    /** trim as asciiz strings */
     private static String trimZero(String s) {
         return s.indexOf('\0') > -1 ? s.substring(0, s.indexOf('\0')) : s;
     }
 
-    /** */
+    /** Deserializes a PRCGS header. */
     public void deserialize(InputStream is) throws IOException {
-        // ファイル長128bytes以下はデータが無い
-        if (is.available() <= 128) {
-            throw new IllegalArgumentException("data is too short");
-        }
-
         DataInput di = new DataInputStream(is);
 
-        // PRCGSファイルのヘッダ解析
         di.readFully(signature);
-        // メジャーバージョンチェック
-        // マイナーバージョンはチェックしない
+        // check major version
+        // not check minor version
         if (signature[0] != 0x50 || signature[1] != 0x5F || signature[2] != 0x33) {
-            throw new IllegalArgumentException("No prcgs Header File");
+            throw new IllegalArgumentException("not PRCGS image");
         }
 
         byte[] buf = new byte[16];
-        // コンピュータ名
+        // running on
         di.readFully(buf);
         computer = trimZero(new String(buf, 0, 16));
-        // エンコードプログラム名
+        // encoder
         di.readFully(buf, 0, 8);
         encoder = trimZero(new String(buf, 0, 8));
-        // データ作成者名
+        // author
         di.readFully(buf, 0, 8);
         author = trimZero(new String(buf, 0, 8));
 
-        // 作成日YY/MM/DD
+        // date created YY/MM/DD
         di.readFully(buf, 0, 8);
         date = new String(buf, 0, 8);
-        // 作成時間YY:MM:DD
+        // time created YY:MM:DD
         di.readFully(buf, 0, 8);
         time = new String(buf, 0, 8);
 
         width = di.readUnsignedShort();
         height = di.readUnsignedShort();
 
-        // 圧縮 0x00:非圧縮　他:圧縮
+        // compression: 0x00: not compressed, else: compressed
         isCompressed = di.readUnsignedByte();
-        // 圧縮長
+        // compressed lengths
         di.readFully(compDict, 0, 7);
-        // モノクロ:1 他:カラー
+        // mono: 1,  else: color
         isMono = di.readUnsignedByte();
         //
         di.readFully(comment, 0, 61);
     }
 
-    /** */
+    /** @param t epoc millis */
     public void setTime(long t) {
         date = String.format("%1$ty/%1$tm/%1$td", t);
 Debug.println(Level.FINE, "date: " + date);
@@ -150,11 +145,11 @@ Debug.println(Level.FINE, "date: " + date);
 Debug.println(Level.FINE, "time: " + time);
     }
 
-    /** */
+    /** "yy/MM/dd'T'HH:mm:ss" */
     private static final DateTimeFormatter formatter =
             DateTimeFormatter.ofPattern("yy/MM/dd'T'HH:mm:ss");
 
-    /** */
+    /** @return epoc millis */
     public long getTime() {
         return LocalDateTime.parse(date + "T" + time, formatter).toInstant(ZoneOffset.UTC).toEpochMilli();
     }
@@ -165,19 +160,19 @@ Debug.println(Level.FINE, "time: " + time);
         fillString(comment, this.comment);
     }
 
-    /** */
+    /** string to byte array in asciiz */
     private static byte[] fillString(String s, byte[] b) {
         byte[] bytes = s.getBytes(Charset.forName("Shift_JIS"));
         System.arraycopy(bytes, 0, b, 0, Math.min(bytes.length, b.length));
         return b;
     }
 
-    /** */
+    /** writes string as asciiz filled by 0 to the length */
     private static void writeString(DataOutput dos, String s, int length) throws IOException {
         dos.write(fillString(s, new byte[length]));
     }
 
-    /** */
+    /** Serializes a PRCGS header. */
     public void serialize(OutputStream os) throws IOException {
         DataOutput dos = new DataOutputStream(os);
 

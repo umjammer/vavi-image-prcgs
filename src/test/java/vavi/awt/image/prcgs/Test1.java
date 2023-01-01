@@ -88,6 +88,16 @@ Debug.println(p);
 
         show(new PrcgsDecoder().decode(new BufferedInputStream(Files.newInputStream(prcgs))));
     }
+
+    @Test
+    void test4() throws Exception {
+        Path prcgs = Paths.get("tmp/out.prc");
+        if (!Files.exists(prcgs.getParent())) {
+            Files.createDirectories(prcgs.getParent());
+        }
+        BufferedImage image = ImageIO.read(Paths.get(Test1.class.getResource("/test.png").toURI()).toFile());
+        new PrcgsEncoder().encode(image, new BufferedOutputStream(Files.newOutputStream(prcgs)));
+    }
 }
 
 /* */

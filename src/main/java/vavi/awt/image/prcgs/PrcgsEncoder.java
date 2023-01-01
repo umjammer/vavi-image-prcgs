@@ -8,9 +8,14 @@ import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferByte;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.OutputStream;
+import java.io.UncheckedIOException;
+import java.util.logging.Level;
 
 import vavi.util.Debug;
+import vavi.util.properties.annotation.Property;
+import vavi.util.properties.annotation.PropsEntity;
 
 
 /**
@@ -20,7 +25,26 @@ import vavi.util.Debug;
  * @author JE4SMQ
  * @author JN3NTN (PRCGS-Press part)
  */
+@PropsEntity(url = "classpath:prcgs.properties")
 public class PrcgsEncoder {
+
+    @Property
+    String computer = "vavi";
+    @Property
+    String encoder = "vavi";
+    @Property
+    String author = "vavi";
+    @Property
+    String comment = "made by PrcgsEncoder";
+
+    /** */
+    public PrcgsEncoder() {
+        try {
+            PropsEntity.Util.bind(this);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
 
     /** Outputs an image as a PRCGS stream. */
     public void encode(BufferedImage image, OutputStream os) throws Exception {
@@ -33,110 +57,104 @@ public class PrcgsEncoder {
         long t = System.currentTimeMillis();
         header.setTime(t);
 
-        header.computer = "vavi";
-        header.encoder = "vavi";
-        header.author = "vavi";
+        header.computer = this.computer;
+        header.encoder = this.encoder;
+        header.author = this.author;
         header.width = w;
         header.height = h;
         header.isCompressed = PrcgsHeader.COMPRESSED;
         header.isMono = PrcgsHeader.COLOR;
 
-        header.setComment("made by PrcgsEncoder");
+        header.setComment(this.comment);
 
-        // BMPファイルをRBG別の配列に格納する(charで5bitカラーへ変換)
-Debug.println("type: " + image.getType());
-        byte[] raster = ((DataBufferByte) image.getRaster().getDataBuffer()).getData(); // TODO assume 3BYTE_RGB
-        // flat w x h plane r, g, b order
-        byte[] plane = new byte[w * h * 3];
+Debug.println(Level.FINE, "type: " + image.getType());
+        byte[] packed = ((DataBufferByte) image.getRaster().getDataBuffer()).getData(); // TODO assume 3BYTE_RGB
+
+        // w * h * (r, g, b) planar
+        byte[] planar = new byte[w * h * 3];
         for (int i = 0; i < w * h; i++) {
             switch (image.getType()) {
             case BufferedImage.TYPE_4BYTE_ABGR:
-                plane[w * h * 0 + i] = raster[i * 4 + 3];
-                plane[w * h * 1 + i] = raster[i * 4 + 2];
-                plane[w * h * 2 + i] = raster[i * 4 + 1];
+                planar[w * h * 0 + i] = packed[i * 4 + 3];
+                planar[w * h * 1 + i] = packed[i * 4 + 2];
+                planar[w * h * 2 + i] = packed[i * 4 + 1];
                 break;
+            default: // TODO implement other types
+                throw new UnsupportedOperationException("type: " + image.getType());
             }
         }
 
         // PRCGS-Press
         // PRCGS RLE(ARC.c)
 
-        // [length, color] * w * h (length is 0 origin, 0 means 1 dot)
-        byte[][] rgb = new byte[w * h][2];
-        for (int i = 0; i < w * h; i++) {
-            rgb[i][0] = 0;
-            rgb[i][1] = 0;
-        }
+        // rgb planar
+        ByteArrayInputStream cis = new ByteArrayInputStream(planar);
 
-        ByteArrayInputStream pis = new ByteArrayInputStream(plane);
-        // length, color
-        ByteArrayOutputStream cos = new ByteArrayOutputStream();
+        // intermediate data (5bit color and same color continuous length)
+        // (index means length from -1, 1 to 254, and 0 means 1 dot)
+        ByteArrayOutputStream mos = new ByteArrayOutputStream();
 
-        // 8ビットから5ビットに減らした階調と長さをCOLW(1,2)へ格納
-        // 最初の1ドット目は比較の元として記録する
-        int cmax = 254;
-        // 同じ階調のカウントfcount = 0;
-        // rgb BMP1件目を読み出し
-        int writeCount = 0;
-        int wmo = 0;
-        int countIndex = 0;
-        // 長さのデータ調査用
+        //
+        // make intermediate data
+        //
+        final int MAX = 254;
+
+        // read first dot from rgb planar
+        int total = 0;
+        // same color dots count
+        int lengthAsIndex = 0;
+        // for counting length data
         int[] countTable = new int[256];
-        int bmpc = pis.read();
-        // covert 5bit
-        int pastd = bmpc >> 3;
-        // compare if same color or not to previous dot from 2nd dot
+        // record 1st dot for comparison
+        int c = cis.read();
+        // make color 5bit
+        int prevColor = c >> 3;
+
+        // compare if same color or not to previous from 2nd dot
         while (true) {
-            // brは長さの上限(cmax)に達したら1)
-            int br = 0;
-            // 現在の色を取得する
-            bmpc = pis.read();
-            if (bmpc == -1) {
+            boolean maxReached = false;
+            // read current color
+            c = cis.read();
+            if (c == -1) {
                 break;
             }
-            int newd = (bmpc & 0xff) >> 3;
-            // 1つ手前と違う階調になったら必ず今までの内容を出力してリセットする
-            if (pastd == newd) {
-                // 圧縮率: 階調データを仮作成
-                // 引数: 長さ -1, 1~254 迄で、長さ 0 は必ず 1 ドット
-                // COLW: 0: 階調, 1: 並べるドット数
-                // 階調、長さの中間ファイルへ記録
-                countIndex++;
-                if (countIndex >= cmax || pis.available() == 0) br = 1;
+            int currColor = c >> 3;
+            if (prevColor == currColor) {
+                // reset when previous color is different from current
+                lengthAsIndex++;
+                maxReached = lengthAsIndex >= MAX || cis.available() == 0;
             }
-            // 1つ手前と違う階調か、長さ上限を越えたらファイル出力
-            if (pastd != newd || br == 1) {
-                // 圧縮率:色のデータを仮作成
-                //  0: 色, 1: 圧縮倍率
-                // 階調と長さを1バイトづつで書き出し
-                cos.write(pastd);
-                cos.write(countIndex);
-                // 出力階調、長さの件数カウント
-                wmo = wmo + countIndex + 1;
-                writeCount = writeCount + 2;
-                // 長さの統計をカウントアップ 引数が実際の長さで、中身がカウント
-                countTable[countIndex]++;
-                if (countIndex >= cmax) {
-                    bmpc = pis.read();
-                    if (bmpc == -1) {
+            if (prevColor != currColor || maxReached) {
+                // when previous color is different or length is over MAX
+                mos.write(prevColor);
+                mos.write(lengthAsIndex);
+                // count color, length
+                total += lengthAsIndex + 1;
+                // increment: index is real length, data is count
+                countTable[lengthAsIndex]++;
+                if (lengthAsIndex == MAX) {
+                    c = cis.read();
+                    if (c == -1) {
                         break;
                     }
-                    newd = (bmpc & 0xff) >> 3;
+                    currColor = c >> 3;
                 }
-                countIndex = 0;
+                lengthAsIndex = 0;
             }
-            pastd = newd;
+            prevColor = currColor;
         }
         // flush last data
-        cos.write(pastd);
-        cos.write(countIndex);
+        mos.write(prevColor);
+        mos.write(lengthAsIndex);
         // count "color and length"
-        wmo = wmo + countIndex + 1;
-        writeCount = writeCount + 2;
-        // 長さの統計をカウントアップ index is real length, data is count
-        countTable[countIndex]++;
-Debug.printf("intermediate: %d bytes, read: %d bytes, total: %d", writeCount, plane.length, wmo);
+        total += lengthAsIndex + 1;
+        // increment: index is real length, data is count
+        countTable[lengthAsIndex]++;
+Debug.printf(Level.FINE, "intermediate: %d bytes, read: %d bytes, total: %d", mos.size(), planar.length, total);
+
+        //
         // select mostly used as compression dictionary(1-7) (0 means 1 dot)
+        //
         byte[][] sortTable = new byte[2][256];
         for (int i = 0; i < 256; i++) {
             sortTable[0][i] = (byte) i;
@@ -145,8 +163,7 @@ Debug.printf("intermediate: %d bytes, read: %d bytes, total: %d", writeCount, pl
         sortTable[1][0] = 0;
         // sort by times
         for (int i = 0; i < 255; i++) {
-            int l = i + 1;
-            for (int j = l; j < 256; j++) {
+            for (int j = i + 1; j < 256; j++) {
                 // select mostly used
                 int hi = sortTable[1][i] * sortTable[0][i];
                 int hj = sortTable[1][j] * sortTable[0][j];
@@ -160,16 +177,20 @@ Debug.printf("intermediate: %d bytes, read: %d bytes, total: %d", writeCount, pl
                 }
             }
         }
-Debug.println("selected compression");
-Debug.println("length, times");
+Debug.println(Level.FINE, "selected compression");
+Debug.println(Level.FINE, "length, times");
 
         for (int i = 0; i < 7; i++) {
-Debug.printf("%d. %d\n", sortTable[0][i], sortTable[1][i]);
+Debug.printf(Level.FINE, "%d. %d\n", sortTable[0][i], sortTable[1][i]);
             header.compDict[i] = sortTable[0][i];
         }
 
+        //
         // output PRC compression
-        // convert from color and length to upper 3bit:index of length, lower 5bit:color
+        //
+
+        // convert intermediate data to output data
+        // (upper 3bit:index of length, lower 5bit:color)
         for (int i = 0; i < 6; i++) {
             int l = i + 1;
             for (int j = l; j < 7; j++) {
@@ -181,9 +202,11 @@ Debug.printf("%d. %d\n", sortTable[0][i], sortTable[1][i]);
             }
         }
 
+        // output header
         header.serialize(os);
-        // color and length
-        ByteArrayInputStream cis = new ByteArrayInputStream(cos.toByteArray());
+
+        // intermediate data
+        ByteArrayInputStream mis = new ByteArrayInputStream(mos.toByteArray());
 
         // shift table origin to 1
         byte[] compDict = new byte[8];
@@ -193,13 +216,13 @@ Debug.printf("%d. %d\n", sortTable[0][i], sortTable[1][i]);
         // last search index must be 1 (dot)
         compDict[7] = 1;
         int dataCount = 0;
-        writeCount = 0; // write count
+        int writeCount = 0; // write count
         while (true) {
-            int color = cis.read();
+            int color = mis.read();
             if (color == -1) {
                 break;
             }
-            int length = cis.read();
+            int length = mis.read();
             if (length == -1) {
                 break;
             }
@@ -208,20 +231,20 @@ Debug.printf("%d. %d\n", sortTable[0][i], sortTable[1][i]);
             do {
                 int shift = compDictIndex + 1;
                 if (shift >= 8) shift = 0;
-                // 長さインデックスを長い方から比較する
-                // データの長さ<=インデックスならファイル出力
+                // compare index from larger
+                // output when data length <= index
                 int alen = compDict[compDictIndex];
                 if (alen <= length) {
                     int written = (shift << 5) | color;
                     os.write(written);
                     writeCount++;
                     dataCount = dataCount + length;
-                    // 書き出した長さ分だけマイナス
+                    // subtract length written
                     length = length - alen;
                 }
                 if (alen > length) compDictIndex++;
             } while (length > 0);
         }
-Debug.printf("in: %d bytes, total out: %d bytes, pixels: %d, compression: %3.1f%%", cos.size(), writeCount + 128, dataCount, (float) writeCount / dataCount * 100);
+Debug.printf(Level.FINE, "in: %d bytes, total out: %d bytes, pixels: %d, compression: %3.1f%%", mos.size(), writeCount + 128, dataCount, (float) writeCount / dataCount * 100);
     }
 }
