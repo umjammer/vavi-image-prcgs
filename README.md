@@ -10,3 +10,16 @@ for several years in the early Heisei era.<br/>
 PRCGS is "Packet Radio Computer Graphic System".
 
 [Original](https://maaberu.web.fc2.com/prcgs.htm)
+
+## Install
+
+ * [maven](https://jitpack.io/#umjammer/vavi-image-prcgs)
+
+## Usage
+
+```java
+    BufferedImage image = ImageIO.read(Paths.get("/foo/bar.prc").toFile());
+```
+## TODO
+
+ * ~~imageio spi~~
